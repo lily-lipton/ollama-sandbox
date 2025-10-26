@@ -1,0 +1,9 @@
+torch
+transformers
+accelerate
+sentencepiece
+protobuf
+datasets
+trl==0.8.6
+peft
+safetensors
