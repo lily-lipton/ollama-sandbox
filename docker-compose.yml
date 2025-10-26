@@ -1,0 +1,26 @@
+services:
+  # 推論用
+  # macOSの場合、Ollama公式イメージ経由ではGPUサポートは現状不可とのこと (CPU推論での運用となる)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./models:/root/.ollama         # モデル永続化 (GGUF/キャッシュ)
+      - ./Modelfiles:/Modelfiles:ro    # `./Modelfiles`を読み取り専用でマウント
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+
+  # 学習/変換・ユーティリティ用
+  trainer:
+    build:
+      context: ./trainer
+      dockerfile: Dockerfile
+    container_name: trainer
+    working_dir: /trainer
+    volumes:
+      - ./scripts:/trainer/scripts
+      - ./data:/trainer/data
+      - ./models:/trainer/models
+    # メモリ制限や共有メモリ等の調整は必要に応じて行う

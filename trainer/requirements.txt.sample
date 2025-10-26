@@ -1,0 +1,6 @@
+transformers==4.45.0
+accelerate
+peft
+datasets
+sentencepiece
+protobuf
