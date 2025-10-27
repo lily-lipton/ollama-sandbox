@@ -23,13 +23,21 @@ LoRAで学習した差分 (outputs/lora_adapter) をベースモデルにマー�
         - モデル変換や推論時に必要となる
 """
 
+import os
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
 
-BASE_DIR = "./finetuning/model/gemma-2-2b"         # ベースモデル
-ADAPTER_DIR = "./finetuning/outputs/lora_adapter"  # LoRA差分の出力先
-OUT_DIR = "./finetuning/model/merged-gemma-2-2b"   # マージ後の保存先
+# Hugging Face Hubへのアクセスを完全に無効化
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
+# 使用するモデルを指定（gemma-2-2b または gemma-2-9b）
+MODEL_NAME = "gemma-2-2b"  # 必要に応じて "gemma-2-9b" に変更
+
+BASE_DIR = f"/trainer/models/{MODEL_NAME}"         # ベースモデル
+ADAPTER_DIR = f"/trainer/models/{MODEL_NAME}-lora"  # LoRA差分の出力先
+OUT_DIR = f"/trainer/models/{MODEL_NAME}-merged"   # マージ後の保存先
 
 # モデルを読み込む際の重み型 (dtype) を指定
 # torch.float32 (FP32)
@@ -37,11 +45,11 @@ OUT_DIR = "./finetuning/model/merged-gemma-2-2b"   # マージ後の保存先
 # torch.bfloat16 (BF16) あるいは torch.float16 (FP16)
 #     - GPU（特にNVIDIA）を使う場合は高速化・省メモリ化のために利用可能
 #     - 但し、CPU Onlyだとエラーになる事が多いため、GPUのときのみ有効にする
-dtype = torch.float32
+dtype = torch.float32  # GCE VMでのCPU推論を考慮してFP32を維持
 
 print("Loading base model...")
 base = AutoModelForCausalLM.from_pretrained(
-    BASE_DIR, local_files_only=True, dtype=dtype
+    BASE_DIR, local_files_only=True, trust_remote_code=True, dtype=dtype
 )
 
 print("Loading LoRA adapter...")
@@ -57,7 +65,7 @@ model.save_pretrained(OUT_DIR, safe_serialization=True)
 
 # Tokenizer も同じ場所へ（llama.cpp 変換時に必要）
 print("Saving tokenizer...")
-tok = AutoTokenizer.from_pretrained(BASE_DIR, local_files_only=True)
+tok = AutoTokenizer.from_pretrained(BASE_DIR, local_files_only=True, trust_remote_code=True)
 tok.save_pretrained(OUT_DIR)
 
 print("Done. Merged model is at:", OUT_DIR)

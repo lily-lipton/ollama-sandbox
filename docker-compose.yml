@@ -23,4 +23,5 @@ services:
       - ./scripts:/trainer/scripts
       - ./data:/trainer/data
       - ./models:/trainer/models
+    tty: true
     # メモリ制限や共有メモリ等の調整は必要に応じて行う

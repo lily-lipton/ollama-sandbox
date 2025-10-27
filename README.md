@@ -30,15 +30,10 @@ docker compose up -d --build
 docker exec -it trainer bash
 
 # LoRA学習
-python3 scripts/lora_sft_light.py \
-  --data /trainer/data/your_dataset.jsonl \
-  --output /trainer/models/lora_adapter
+python3 scripts/lora_sft_light.py
 
 # ベース合成
-python3 scripts/merge_lora.py \
-  --base /trainer/models/base_model/      # safetensors 等
-  --lora /trainer/models/lora_adapter \
-  --out  /trainer/models/merged-f32.gguf  # or merged-f16.bin 等
+python3 scripts/merge_lora.py
 
 # 量子化 (llama-quantizeを使う場合)
 llama-quantize /trainer/models/merged-f32.gguf \
