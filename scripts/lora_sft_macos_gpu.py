@@ -28,17 +28,11 @@ os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 # macOS GPU（MPS）デバイス設定
-device = None
-if torch.backends.mps.is_available():
-    device = torch.device("mps")
-    print("macOS GPU (MPS) が利用可能です。GPUを使用してトレーニングを実行します。")
-elif torch.cuda.is_available():
-    device = torch.device("cuda")
-    print("CUDA GPU が利用可能です。GPUを使用してトレーニングを実行します。")
-else:
-    device = torch.device("cpu")
-    print("GPUが利用できません。CPUを使用してトレーニングを実行します。")
+if not torch.backends.mps.is_available():
+    raise RuntimeError("macOS GPU (MPS) が利用できません。このスクリプトはmacOS GPU環境でのみ実行可能です。")
 
+device = torch.device("mps")
+print("macOS GPU (MPS) が利用可能です。GPUを使用してトレーニングを実行します。")
 print(f"使用デバイス: {device}")
 
 
@@ -61,20 +55,9 @@ tokenizer.pad_token = tokenizer.eos_token
 tokenizer.padding_side = "right"
 
 # モデルの読み込み設定
-# macOS GPU（MPS）では fp16/bf16 が利用可能
-# デバイスに応じて最適な精度を選択
-if device.type == "mps":
-    # macOS GPU（MPS）では bf16 が推奨
-    model_dtype = torch.bfloat16
-    print("macOS GPU (MPS) を使用します。bfloat16精度でモデルを読み込みます。")
-elif device.type == "cuda":
-    # CUDA GPUでは fp16 が推奨
-    model_dtype = torch.float16
-    print("CUDA GPU を使用します。float16精度でモデルを読み込みます。")
-else:
-    # CPUでは float32 のみ対応
-    model_dtype = torch.float32
-    print("CPU を使用します。float32精度でモデルを読み込みます。")
+# macOS GPU（MPS）では bf16 が推奨
+model_dtype = torch.bfloat16
+print("macOS GPU (MPS) を使用します。bfloat16精度でモデルを読み込みます。")
 
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_DIR,
@@ -169,49 +152,36 @@ lora_config = LoraConfig(
 """
 トレーニング設定 - macOS GPU最適化版
 """
-# macOS GPU用の最適化されたトレーニング設定
-if device.type == "mps":
-    # macOS GPU（MPS）用設定
-    per_device_train_batch_size = 2      # MPSではバッチサイズを増やせる
-    per_device_eval_batch_size = 2       # バリデーション用バッチサイズ
-    gradient_accumulation_steps = 8      # 実効バッチサイズ16（2×8）
-    fp16_enabled = False                 # MPSではbf16が推奨
-    bf16_enabled = True                  # MPSではbf16が推奨
-    dataloader_num_workers = 2           # GPU使用時は適度なワーカー数
-    dataloader_pin_memory = False        # macOSではFalseが安定
-    print("macOS GPU (MPS) 用の最適化設定を適用します。")
-elif device.type == "cuda":
-    # CUDA GPU用設定
-    per_device_train_batch_size = 4      # CUDAではより大きなバッチサイズが可能
-    per_device_eval_batch_size = 4       # バリデーション用バッチサイズ
-    gradient_accumulation_steps = 4      # 実効バッチサイズ16（4×4）
-    fp16_enabled = True                  # CUDAではfp16が推奨
-    bf16_enabled = False                 # CUDAではfp16が推奨
-    dataloader_num_workers = 4           # CUDAではより多くのワーカーが可能
-    dataloader_pin_memory = True         # CUDAではpin_memoryが有効
-    print("CUDA GPU 用の最適化設定を適用します。")
-else:
-    # CPU用設定
-    per_device_train_batch_size = 1      # CPUでは小さいバッチサイズ
-    per_device_eval_batch_size = 1       # バリデーション用バッチサイズ
-    gradient_accumulation_steps = 4      # 実効バッチサイズ4（1×4）
-    fp16_enabled = False                 # CPUではfloat32のみ
-    bf16_enabled = False                 # CPUではfloat32のみ
-    dataloader_num_workers = 2           # CPUでは適度なワーカー数
-    dataloader_pin_memory = False        # CPU環境ではFalseが安定
-    print("CPU 用の設定を適用します。")
+# macOS GPU（MPS）用の最適化されたトレーニング設定
+per_device_train_batch_size = 2      # MPSではバッチサイズを増やせる
+per_device_eval_batch_size = 2       # バリデーション用バッチサイズ
+gradient_accumulation_steps = 8      # 実効バッチサイズ16（2×8）
+fp16_enabled = False                 # MPSではbf16が推奨
+bf16_enabled = True                  # MPSではbf16が推奨
+dataloader_num_workers = 0           # マルチプロセシングを無効化
+dataloader_pin_memory = False        # macOSではFalseが安定
+print("macOS GPU (MPS) 用の最適化設定を適用します。")
 
 training_args = transformers.TrainingArguments(
     output_dir="outputs",
     per_device_train_batch_size=per_device_train_batch_size,
     per_device_eval_batch_size=per_device_eval_batch_size,
     gradient_accumulation_steps=gradient_accumulation_steps,
-    warmup_steps=5,                    # 小規模データセットに適したウォームアップ
-    max_steps=100,                     # 小規模データセットに適した学習ステップ数
+
+    # warmup_steps=5,                    # 小規模データセットに適したウォームアップ
+    # max_steps=100,                     # 小規模データセットに適した学習ステップ数
+    warmup_steps=1,                    # 検証用：最小ウォームアップ
+    max_steps=5,                       # 検証用：5ステップのみ（約1-2分で完了）
+    
     learning_rate=1e-4,                # より安定した学習率
-    logging_steps=5,                   # ログ頻度を調整
-    eval_steps=10,                     # バリデーション実行頻度（10ステップごと）
-    save_steps=50,                     # チェックポイント保存頻度調整
+
+    # logging_steps=5,                   # ログ頻度を調整
+    # eval_steps=10,                     # バリデーション実行頻度（10ステップごと）
+    # save_steps=50,                     # チェックポイント保存頻度調整
+    logging_steps=1,                   # 検証用：毎ステップログ出力
+    eval_steps=2,                      # 検証用：2ステップごとに評価
+    save_steps=5,                      # 検証用：最後に保存
+
     save_total_limit=3,                # より多くのチェックポイントを保持
     fp16=fp16_enabled,                 # デバイスに応じた精度設定
     bf16=bf16_enabled,                 # デバイスに応じた精度設定
@@ -231,6 +201,8 @@ training_args = transformers.TrainingArguments(
     greater_is_better=False,           # 損失は小さい方が良い
     eval_strategy="steps",             # ステップごとに評価
     save_strategy="steps",              # ステップごとに保存
+    # データセットの列処理設定
+    remove_unused_columns=False,       # 未使用の列を削除しない（SFTTrainer用）
 )
 
 """
@@ -262,25 +234,36 @@ trainer = SFTTrainer(
     packing=False,  # packingを無効にして各サンプルを個別処理
 )
 
-# 学習実行
-trainer.train()
+# テストデータセットもSFTTrainerで処理するための追加設定
+# テストデータセットをSFTTrainerの形式に変換
+test_dataset_formatted = test_dataset.map(formatting_func, batched=True, remove_columns=test_dataset.column_names)
 
-"""
-テストデータでの最終評価
-"""
-print("\n=== テストデータでの最終評価 ===")
-test_results = trainer.evaluate(eval_dataset=test_dataset, metric_key_prefix="test")
-print(f"テスト損失: {test_results['test_loss']:.4f}")
+def main():
+    """
+    メイン実行関数
+    """
+    # 学習実行
+    trainer.train()
 
-"""
-adapterの保存
-"""
-# LoRA差分（adapter）のみ保存
-# 出力先は models/ 配下に統一
-adapter_path = f"models/{MODEL_NAME}-lora"
-trainer.model.save_pretrained(adapter_path)
+    """
+    テストデータでの最終評価
+    """
+    print("\n=== テストデータでの最終評価 ===")
+    test_results = trainer.evaluate(eval_dataset=test_dataset_formatted, metric_key_prefix="test")
+    print(f"テスト損失: {test_results['test_loss']:.4f}")
 
-print("\n=== 学習完了 ===")
-print(f"LoRA adapter saved to {adapter_path}")
-print(f"最終テスト損失: {test_results['test_loss']:.4f}")
-print("学習が正常に完了しました。")
+    """
+    adapterの保存
+    """
+    # LoRA差分（adapter）のみ保存
+    # 出力先は models/ 配下に統一
+    adapter_path = f"models/{MODEL_NAME}-lora"
+    trainer.model.save_pretrained(adapter_path)
+
+    print("\n=== 学習完了 ===")
+    print(f"LoRA adapter saved to {adapter_path}")
+    print(f"最終テスト損失: {test_results['test_loss']:.4f}")
+    print("学習が正常に完了しました。")
+
+if __name__ == '__main__':
+    main()
