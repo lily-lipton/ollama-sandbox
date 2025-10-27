@@ -1,0 +1,6 @@
+FROM /home/pd-user/finetuning/model/gemma-2-2b-lora.Q4_K_M.gguf
+
+# 任意の実行パラメータ例:
+# PARAMETER num_ctx 4096
+# PARAMETER temperature 0.7
+# PARAMETER stop "<|eot_id|>"

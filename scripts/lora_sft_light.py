@@ -5,38 +5,53 @@ from trl import SFTTrainer
 from peft import LoraConfig
 
 # ---- CPUのスレッド数を絞る（過負荷防止）----
+# OMP_NUM_THREADS: PyTorchなどで使われるOpenMPベースの並列計算用スレッド数を指定
 os.environ.setdefault("OMP_NUM_THREADS", "2")
-os.environ.setdefault("MKL_NUM_THREADS", "2")
-os.environ.setdefault("NUMEXPR_MAX_THREADS", "2")
 torch.set_num_threads(int(os.environ["OMP_NUM_THREADS"]))
-torch.set_num_interop_threads(1)  # 競合をさらに抑える
+
+# MKL_NUM_THREADS: Intel MKL (行列演算ライブラリ) で用いるスレッド数を指定
+os.environ.setdefault("MKL_NUM_THREADS", "2")
+
+# NUMEXPR_MAX_THREADS: numexprライブラリの最大スレッド数（内部で使われることがある）を指定
+os.environ.setdefault("NUMEXPR_MAX_THREADS", "2")
+
+# torch.set_num_interop_threads: 異なる並列バックエンド間での競合を抑えるためのスレッド数（1で厳しくする）
+torch.set_num_interop_threads(1)
 
 
 """
 モデルをローカルから読む
 """
-MODEL_DIR = "/home/pd-user/finetuning/model/gemma-2-2b"
+MODEL_DIR = "../models/gemma-2-2b"
 
 # Hub を経由しない
 tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR, local_files_only=True)
 
 # Gemmaはpadトークン未定義なので、SFT時のバッチ化のためにpadをEOSに合わせる
+# バッチは以下のような2次元配列となり、最大長に要素数を揃えて上げる必要がある
+# 文1: "こんにちは"     => [123, 456, 789]      => [123, 456, 789, <pad>, <pad>]
+# 文2: "今日は良い天気" => [10, 20, 30, 40, 50] => [10, 20, 30, 40, 50]
+# 文3: "こんばんは"     => [111, 222, 333]      => [111, 222, 333, <pad>, <pad>]
 tokenizer.pad_token = tokenizer.eos_token
 tokenizer.padding_side = "right"
 
+# モデルの読み込み設定
 # 【重要】CPUでは fp16/bf16 は不可。float32 で安定動作
 # 【任意】勾配チェックポイントを使うなら後で use_cache=False にする
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_DIR,
     local_files_only=True,
-    dtype=torch.float32,
+    dtype=torch.float32,  # CPUでは float32 のみ対応
 )
 
-# ---- 勾配チェックポイントでメモリ節約（計算は重くなる）----
+# 勾配チェックポイント (メモリ消費は抑えられるが、計算時間は増える)
 if hasattr(model, "gradient_checkpointing_enable"):
     model.gradient_checkpointing_enable()
-if hasattr(model.config, "use_cache"):
-    model.config.use_cache = False
+
+# キャッシュの無効化
+# 推論向けの高速化キャッシュをOFFにして、学習時のメモリ使用を抑える
+# if hasattr(model.config, "use_cache"):
+#     model.config.use_cache = False
 
 """
 データセットの読み込み
@@ -50,8 +65,6 @@ data = DatasetDict({"train": data["test"]})
 
 # SFTTrainerに渡す生テキストを作る関数
 def formatting_func(example):
-    # text = f"Quote: {example['quote']}\nAuthor: {example['author']}{tokenizer.eos_token}"
-
     # データセット (skouai/Kansai-Obachan) に合わせて修正
     instr = example.get("instruction", "")
     inp   = example.get("input", "")
@@ -103,6 +116,10 @@ training_args = transformers.TrainingArguments(
     report_to="none",
 )
 
+
+"""
+SFTTrainerを用いたデータローダ構築
+"""
 trainer = SFTTrainer(
     model=model,
     peft_config=lora_config,

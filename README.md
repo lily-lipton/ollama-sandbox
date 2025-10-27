@@ -53,7 +53,13 @@ llama-quantize /trainer/models/merged-f32.gguf \
 docker exec -it ollama bash -lc \
   "ollama create gemma2-2b-lora -f /Modelfiles/gemma2-2b-lora.Modelfile"
 
+# 作成できたことを確認
+ollama list
+
 # 動作確認
+ollama run gemma2-2b-lora
+
+# 動作確認 (curl)
 curl -s http://localhost:11434/api/chat -d '{
   "model": "gemma2-2b-lora",
   "messages": [{"role":"user","content":"こんにちは。自己紹介して"}]

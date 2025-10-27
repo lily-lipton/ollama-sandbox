@@ -10,7 +10,7 @@ services:
       - ./models:/root/.ollama         # モデル永続化 (GGUF/キャッシュ)
       - ./Modelfiles:/Modelfiles:ro    # `./Modelfiles`を読み取り専用でマウント
     environment:
-      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_HOST=0.0.0.0            # Ollama (11434ポート) をコンテナ外部からアクセス可能にする
 
   # 学習/変換・ユーティリティ用
   trainer:
