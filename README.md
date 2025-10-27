@@ -30,7 +30,7 @@ docker compose up -d --build
 docker exec -it trainer bash
 
 # LoRA学習
-python3 scripts/lora_sft_light.py
+python3 scripts/lora_sft_macos_gpu.py
 
 # ベース合成
 python3 scripts/merge_lora.py

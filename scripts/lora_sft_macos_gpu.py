@@ -4,24 +4,42 @@ from datasets import load_dataset, DatasetDict, Dataset
 from trl import SFTTrainer
 from peft import LoraConfig
 
-# ---- M1 Pro環境での最適化設定 ----
-# M1 Proの統一メモリアーキテクチャを活用するため、スレッド数を増やす
-# OMP_NUM_THREADS: PyTorchなどで使われるOpenMPベースの並列計算用スレッド数を指定
-os.environ.setdefault("OMP_NUM_THREADS", "8")  # M1 Proのコア数に合わせて増加
+# ---- macOS GPU（Metal Performance Shaders）環境での最適化設定 ----
+# macOS GPU環境での最適化設定
+# MPS（Metal Performance Shaders）を使用する場合のスレッド設定
+os.environ.setdefault("OMP_NUM_THREADS", "4")  # GPU使用時はCPUスレッド数を削減
 torch.set_num_threads(int(os.environ["OMP_NUM_THREADS"]))
 
 # MKL_NUM_THREADS: Intel MKL (行列演算ライブラリ) で用いるスレッド数を指定
-os.environ.setdefault("MKL_NUM_THREADS", "8")  # M1 Proのコア数に合わせて増加
+os.environ.setdefault("MKL_NUM_THREADS", "4")  # GPU使用時はCPUスレッド数を削減
 
 # NUMEXPR_MAX_THREADS: numexprライブラリの最大スレッド数（内部で使われることがある）を指定
-os.environ.setdefault("NUMEXPR_MAX_THREADS", "8")  # M1 Proのコア数に合わせて増加
+os.environ.setdefault("NUMEXPR_MAX_THREADS", "4")  # GPU使用時はCPUスレッド数を削減
 
 # torch.set_num_interop_threads: 異なる並列バックエンド間での競合を抑えるためのスレッド数
-torch.set_num_interop_threads(4)  # M1 Proの性能を活用するため増加
+torch.set_num_interop_threads(2)  # GPU使用時はCPUスレッド数を削減
+
+# macOS GPU（MPS）の設定
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")  # MPSが利用できない場合のCPUフォールバック
+os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")  # MPSメモリ使用量の最適化
 
 # Hugging Face Hubへのアクセスを完全に無効化
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
+# macOS GPU（MPS）デバイス設定
+device = None
+if torch.backends.mps.is_available():
+    device = torch.device("mps")
+    print("macOS GPU (MPS) が利用可能です。GPUを使用してトレーニングを実行します。")
+elif torch.cuda.is_available():
+    device = torch.device("cuda")
+    print("CUDA GPU が利用可能です。GPUを使用してトレーニングを実行します。")
+else:
+    device = torch.device("cpu")
+    print("GPUが利用できません。CPUを使用してトレーニングを実行します。")
+
+print(f"使用デバイス: {device}")
 
 
 """
@@ -29,7 +47,7 @@ os.environ["TRANSFORMERS_OFFLINE"] = "1"
 """
 # 使用するモデルを指定（gemma-2-2b または gemma-2-9b）
 MODEL_NAME = "gemma-2-2b"  # 必要に応じて "gemma-2-9b" に変更
-MODEL_DIR = f"/trainer/models/{MODEL_NAME}"
+MODEL_DIR = f"models/{MODEL_NAME}"
 
 # Hub を経由しない
 tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR, local_files_only=True, trust_remote_code=True)
@@ -43,14 +61,32 @@ tokenizer.pad_token = tokenizer.eos_token
 tokenizer.padding_side = "right"
 
 # モデルの読み込み設定
-# 【重要】CPUでは fp16/bf16 は不可。float32 で安定動作
-# 【任意】勾配チェックポイントを使うなら後で use_cache=False にする
+# macOS GPU（MPS）では fp16/bf16 が利用可能
+# デバイスに応じて最適な精度を選択
+if device.type == "mps":
+    # macOS GPU（MPS）では bf16 が推奨
+    model_dtype = torch.bfloat16
+    print("macOS GPU (MPS) を使用します。bfloat16精度でモデルを読み込みます。")
+elif device.type == "cuda":
+    # CUDA GPUでは fp16 が推奨
+    model_dtype = torch.float16
+    print("CUDA GPU を使用します。float16精度でモデルを読み込みます。")
+else:
+    # CPUでは float32 のみ対応
+    model_dtype = torch.float32
+    print("CPU を使用します。float32精度でモデルを読み込みます。")
+
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_DIR,
     local_files_only=True,
     trust_remote_code=True,
-    dtype=torch.float32,  # CPUでは float32 のみ対応
+    dtype=model_dtype,
+    device_map=None,  # 手動でデバイスに移動
 )
+
+# モデルをデバイスに移動
+model = model.to(device)
+print(f"モデルを {device} に移動しました。")
 
 # 勾配チェックポイント (メモリ消費は抑えられるが、計算時間は増える)
 if hasattr(model, "gradient_checkpointing_enable"):
@@ -88,7 +124,7 @@ def load_faq_dataset(file_path):
     })
 
 # 社内FAQデータを読み込み
-data = load_faq_dataset("/trainer/data/sample/help_list_tool_login.jsonl")
+data = load_faq_dataset("data/sample/help_list_tool_login.jsonl")
 
 # DatasetDictから個別のDatasetを取得
 train_dataset = data["train"]
@@ -131,26 +167,58 @@ lora_config = LoraConfig(
 
 
 """
-トレーニング設定 - バリデーションとEarly Stopping対応
+トレーニング設定 - macOS GPU最適化版
 """
+# macOS GPU用の最適化されたトレーニング設定
+if device.type == "mps":
+    # macOS GPU（MPS）用設定
+    per_device_train_batch_size = 2      # MPSではバッチサイズを増やせる
+    per_device_eval_batch_size = 2       # バリデーション用バッチサイズ
+    gradient_accumulation_steps = 8      # 実効バッチサイズ16（2×8）
+    fp16_enabled = False                 # MPSではbf16が推奨
+    bf16_enabled = True                  # MPSではbf16が推奨
+    dataloader_num_workers = 2           # GPU使用時は適度なワーカー数
+    dataloader_pin_memory = False        # macOSではFalseが安定
+    print("macOS GPU (MPS) 用の最適化設定を適用します。")
+elif device.type == "cuda":
+    # CUDA GPU用設定
+    per_device_train_batch_size = 4      # CUDAではより大きなバッチサイズが可能
+    per_device_eval_batch_size = 4       # バリデーション用バッチサイズ
+    gradient_accumulation_steps = 4      # 実効バッチサイズ16（4×4）
+    fp16_enabled = True                  # CUDAではfp16が推奨
+    bf16_enabled = False                 # CUDAではfp16が推奨
+    dataloader_num_workers = 4           # CUDAではより多くのワーカーが可能
+    dataloader_pin_memory = True         # CUDAではpin_memoryが有効
+    print("CUDA GPU 用の最適化設定を適用します。")
+else:
+    # CPU用設定
+    per_device_train_batch_size = 1      # CPUでは小さいバッチサイズ
+    per_device_eval_batch_size = 1       # バリデーション用バッチサイズ
+    gradient_accumulation_steps = 4      # 実効バッチサイズ4（1×4）
+    fp16_enabled = False                 # CPUではfloat32のみ
+    bf16_enabled = False                 # CPUではfloat32のみ
+    dataloader_num_workers = 2           # CPUでは適度なワーカー数
+    dataloader_pin_memory = False        # CPU環境ではFalseが安定
+    print("CPU 用の設定を適用します。")
+
 training_args = transformers.TrainingArguments(
     output_dir="outputs",
-    per_device_train_batch_size=1,     # 小規模データセット（79件）のため1に戻す
-    per_device_eval_batch_size=1,      # バリデーション用バッチサイズ
-    gradient_accumulation_steps=4,     # 実効バッチサイズ4で十分（8→4）
-    warmup_steps=5,                    # 小規模データセットに適したウォームアップ（10→5）
-    max_steps=100,                     # 小規模データセットに適した学習ステップ数（200→100）
-    learning_rate=1e-4,                # より安定した学習率（2e-4→1e-4）
-    logging_steps=5,                   # ログ頻度を調整（1→5）
+    per_device_train_batch_size=per_device_train_batch_size,
+    per_device_eval_batch_size=per_device_eval_batch_size,
+    gradient_accumulation_steps=gradient_accumulation_steps,
+    warmup_steps=5,                    # 小規模データセットに適したウォームアップ
+    max_steps=100,                     # 小規模データセットに適した学習ステップ数
+    learning_rate=1e-4,                # より安定した学習率
+    logging_steps=5,                   # ログ頻度を調整
     eval_steps=10,                     # バリデーション実行頻度（10ステップごと）
-    save_steps=50,                     # チェックポイント保存頻度調整（20→50）
-    save_total_limit=3,                # より多くのチェックポイントを保持（1→3）
-    fp16=False,                        # M1 Proではfloat32が安定
-    bf16=False,                        # M1 Proではfloat32が安定
-    # ↓ M1 Pro環境での最適化オプション
-    optim="adamw_torch",               # M1 Proでより効率的（adafactor→adamw_torch）
-    dataloader_num_workers=2,          # M1 Proのコア数を活用（0→2）
-    dataloader_pin_memory=False,       # CPU環境ではFalseが安定
+    save_steps=50,                     # チェックポイント保存頻度調整
+    save_total_limit=3,                # より多くのチェックポイントを保持
+    fp16=fp16_enabled,                 # デバイスに応じた精度設定
+    bf16=bf16_enabled,                 # デバイスに応じた精度設定
+    # ↓ デバイス最適化オプション
+    optim="adamw_torch",               # より効率的なオプティマイザー
+    dataloader_num_workers=dataloader_num_workers,
+    dataloader_pin_memory=dataloader_pin_memory,
     disable_tqdm=False,
     report_to="none",
     # 追加の最適化オプション
@@ -161,7 +229,7 @@ training_args = transformers.TrainingArguments(
     load_best_model_at_end=True,       # 最良モデルを最終的に読み込み
     metric_for_best_model="eval_loss",  # 評価指標（損失）
     greater_is_better=False,           # 損失は小さい方が良い
-    eval_strategy="steps",             # ステップごとに評価（新しい引数名）
+    eval_strategy="steps",             # ステップごとに評価
     save_strategy="steps",              # ステップごとに保存
 )
 
@@ -209,7 +277,7 @@ adapterの保存
 """
 # LoRA差分（adapter）のみ保存
 # 出力先は models/ 配下に統一
-adapter_path = f"/trainer/models/{MODEL_NAME}-lora"
+adapter_path = f"models/{MODEL_NAME}-lora"
 trainer.model.save_pretrained(adapter_path)
 
 print("\n=== 学習完了 ===")
