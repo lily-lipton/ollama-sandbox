@@ -117,19 +117,31 @@ test_dataset = data["test"]
 # ここで tokenizer による map は不要（SFTTrainer に任せる）
 # data = data.map(lambda samples: tokenizer(samples["quote"]), batched=True)
 
-# SFTTrainerに渡す生テキストを作る関数
-def formatting_func(example):
-    # 社内FAQデータの構造に合わせて修正
-    instr = example.get("instruction", "")
-    inp   = example.get("input", "")
-    out   = example.get("output", "")
+# SFTTrainerに渡す生テキストを作る関数（バッチ前提）
+def formatting_func(batch):
+    outputs = batch.get("output", [])
+    if not outputs:
+        return []
 
-    if inp:
-        text = f"質問: {instr}\n詳細: {inp}\n回答: {out}{tokenizer.eos_token}"
-    else:
-        text = f"質問: {instr}\n回答: {out}{tokenizer.eos_token}"
+    instructions = batch.get("instruction")
+    if not instructions:
+        instructions = [""] * len(outputs)
 
-    return [text]  # リストを返す（SFTTrainerの要求）
+    inputs = batch.get("input")
+    if not inputs:
+        inputs = [""] * len(outputs)
+
+    texts = []
+    for instr, inp, out in zip(instructions, inputs, outputs):
+        instr = instr or ""
+        out = out or ""
+        if inp:
+            text = f"質問: {instr}\n詳細: {inp}\n回答: {out}{tokenizer.eos_token}"
+        else:
+            text = f"質問: {instr}\n回答: {out}{tokenizer.eos_token}"
+        texts.append(text)
+
+    return texts  # SFTTrainerはバッチサイズ分の文字列リストを要求する
 
 
 """
@@ -180,7 +192,7 @@ training_args = transformers.TrainingArguments(
     # save_steps=50,                     # チェックポイント保存頻度調整
     logging_steps=1,                   # 検証用：毎ステップログ出力
     eval_steps=2,                      # 検証用：2ステップごとに評価
-    save_steps=5,                      # 検証用：最後に保存
+    save_steps=4,                      # 検証用：eval_stepsの倍数（2×2=4）
 
     save_total_limit=3,                # より多くのチェックポイントを保持
     fp16=fp16_enabled,                 # デバイスに応じた精度設定
@@ -192,7 +204,7 @@ training_args = transformers.TrainingArguments(
     disable_tqdm=False,
     report_to="none",
     # 追加の最適化オプション
-    dataloader_prefetch_factor=2,      # データローダーの効率化
+    # dataloader_prefetch_factor=2,      # データローダーの効率化（num_workers=0では使用不可）
     label_smoothing_factor=0.1,        # 過学習防止
     max_grad_norm=1.0,                 # 勾配クリッピング
     # Early Stopping設定
@@ -201,8 +213,6 @@ training_args = transformers.TrainingArguments(
     greater_is_better=False,           # 損失は小さい方が良い
     eval_strategy="steps",             # ステップごとに評価
     save_strategy="steps",              # ステップごとに保存
-    # データセットの列処理設定
-    remove_unused_columns=False,       # 未使用の列を削除しない（SFTTrainer用）
 )
 
 """
@@ -218,6 +228,12 @@ early_stopping_callback = EarlyStoppingCallback(
 """
 SFTTrainerを用いたデータローダ構築 - バリデーション対応
 """
+# データセット関連設定（formatting_funcで共有利用）
+MAX_SEQ_LENGTH = 768
+PACKING_ENABLED = False
+NUM_OF_SEQUENCES = 1024
+CHARS_PER_TOKEN = 3.6
+
 trainer = SFTTrainer(
     model=model,
     peft_config=lora_config,
@@ -230,13 +246,14 @@ trainer = SFTTrainer(
     # max_seq_length は "実データの長さ" に合わせるのがコツ
     # 社内FAQデータの回答は200-500文字程度なので、768で十分
     # GCE VMでのCPU推論も考慮して適度な長さに設定
-    max_seq_length=768,
-    packing=False,  # packingを無効にして各サンプルを個別処理
+    max_seq_length=MAX_SEQ_LENGTH,
+    packing=PACKING_ENABLED,  # packingを無効にして各サンプルを個別処理
 )
 
 # テストデータセットもSFTTrainerで処理するための追加設定
 # テストデータセットをSFTTrainerの形式に変換
-test_dataset_formatted = test_dataset.map(formatting_func, batched=True, remove_columns=test_dataset.column_names)
+# 注意: SFTTrainerは生のテキストデータを期待するため、事前フォーマットは不要
+# test_dataset_formatted = test_dataset.map(formatting_func, remove_columns=test_dataset.column_names)
 
 def main():
     """
@@ -249,7 +266,24 @@ def main():
     テストデータでの最終評価
     """
     print("\n=== テストデータでの最終評価 ===")
-    test_results = trainer.evaluate(eval_dataset=test_dataset_formatted, metric_key_prefix="test")
+
+    # # テストデータセットをSFTTrainerの形式に変換
+    # test_dataset_formatted = test_dataset.map(formatting_func, remove_columns=test_dataset.column_names)
+    # test_results = trainer.evaluate(eval_dataset=test_dataset_formatted, metric_key_prefix="test")
+
+    # テストデータセットもSFTTrainerのメソッドで事前トークナイズして評価
+    test_dataset_prepared = trainer._prepare_dataset(
+        test_dataset,
+        tokenizer=tokenizer,
+        packing=PACKING_ENABLED,
+        dataset_text_field=None,
+        max_seq_length=MAX_SEQ_LENGTH,
+        formatting_func=formatting_func,
+        num_of_sequences=NUM_OF_SEQUENCES,
+        chars_per_token=CHARS_PER_TOKEN,
+        remove_unused_columns=trainer.args.remove_unused_columns,
+    )
+    test_results = trainer.evaluate(eval_dataset=test_dataset_prepared, metric_key_prefix="test")
     print(f"テスト損失: {test_results['test_loss']:.4f}")
 
     """
