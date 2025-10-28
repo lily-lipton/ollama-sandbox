@@ -29,48 +29,61 @@ print(f"使用デバイス: {device}")
 
 
 """
-モデルをローカルから読む
+モデルをローカルからロード
 """
-# 使用するモデルを指定（gemma-2-2b または gemma-2-9b）
-MODEL_NAME = "gemma-2-2b"  # 必要に応じて "gemma-2-9b" に変更
+# 使用するモデルを指定
+MODEL_NAME = "gemma-2-2b"
 MODEL_DIR = f"models/{MODEL_NAME}"
 
-# Hub を経由しない
+# AutoTokenizer.from_pretrained()
+#   - 指定したモデル専用のトークナイザーのインスタンスを生成
+#   - local_files_only=True
+#       - Hugging Face Hub を経由せずにローカルからモデルをロード
+#   - trust_remote_code=True
+#       - モデル側で独自に定義されたトークナイザークラスやメソッドを読み込むことを許可
+#       - リモートで提供されている Python コードを実行できるようになるため、信頼できるソースであることが前提
 tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR, local_files_only=True, trust_remote_code=True)
 
 # Gemmaはpadトークン未定義なので、SFT時のバッチ化のためにpadをEOSに合わせる
-# バッチは以下のような2次元配列となり、最大長に要素数を揃えて上げる必要がある
-# 文1: "こんにちは"     => [123, 456, 789]      => [123, 456, 789, <pad>, <pad>]
-# 文2: "今日は良い天気" => [10, 20, 30, 40, 50] => [10, 20, 30, 40, 50]
-# 文3: "こんばんは"     => [111, 222, 333]      => [111, 222, 333, <pad>, <pad>]
+#   - バッチは以下のような2次元配列となり、最大長に要素数を揃えて上げる必要がある
+#         文1: "こんにちは"     => [123, 456, 789]      => [123, 456, 789, <pad>, <pad>]
+#         文2: "今日は良い天気" => [10, 20, 30, 40, 50] => [10, 20, 30, 40, 50]
+#         文3: "こんばんは"     => [111, 222, 333]      => [111, 222, 333, <pad>, <pad>]
 tokenizer.pad_token = tokenizer.eos_token
 tokenizer.padding_side = "right"
 
-# モデルの読み込み設定
-# macOS GPU（MPS）では bf16 が推奨
+# モデルのロード設定
+# macOS GPU (MPS) では bf16 (bfloat16) が推奨
 model_dtype = torch.bfloat16
-print("macOS GPU (MPS) を使用します。bfloat16精度でモデルを読み込みます。")
 
+# AutoModelForCausalLM.from_pretrained()
+#   - 指定したモデルをロードし、専用のモデルインスタンス (学習可能なモデルオブジェクト) を生成
+#   - local_files_only=True
+#       - Hugging Face Hub を経由せずにローカルからモデルをロード
+#   - trust_remote_code=True
+#       - モデル側で独自に定義されたトークナイザークラスやメソッドを読み込むことを許可
+#   - dtype=model_dtype
+#       - モデルの重みをどの精度 (データ型) で読み込むかを指定
+#       - ここでは別途設定した torch.bfloat16 を渡して、省メモリ化や高速化を図っている
+#   - device_map=None
+#       - 自動で GPU / CPU を割り当てず、後続のコードで手動でデバイス配置を制御
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_DIR,
     local_files_only=True,
     trust_remote_code=True,
     dtype=model_dtype,
-    device_map=None,  # 手動でデバイスに移動
+    device_map=None,
 )
 
-# モデルをデバイスに移動
+# モデルをデバイス (MPS) に配置
 model = model.to(device)
-print(f"モデルを {device} に移動しました。")
+print(f"モデルを {device} に配置しました。")
 
-# 勾配チェックポイント (メモリ消費は抑えられるが、計算時間は増える)
+# 勾配チェックポイント (gradient_checkpointing) を有効化
+# この手法により、トレーニング中のメモリ消費を抑えられるが、計算時間は増加する
 if hasattr(model, "gradient_checkpointing_enable"):
     model.gradient_checkpointing_enable()
 
-# キャッシュの無効化
-# 推論向けの高速化キャッシュをOFFにして、学習時のメモリ使用を抑える
-# if hasattr(model.config, "use_cache"):
-#     model.config.use_cache = False
 
 """
 データセットの読み込み
