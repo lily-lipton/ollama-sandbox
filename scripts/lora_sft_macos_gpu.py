@@ -4,35 +4,27 @@ from datasets import load_dataset, DatasetDict, Dataset
 from trl import SFTTrainer
 from peft import LoraConfig
 
-# ---- macOS GPU（Metal Performance Shaders）環境での最適化設定 ----
-# macOS GPU環境での最適化設定
-# MPS（Metal Performance Shaders）を使用する場合のスレッド設定
-os.environ.setdefault("OMP_NUM_THREADS", "4")  # GPU使用時はCPUスレッド数を削減
-torch.set_num_threads(int(os.environ["OMP_NUM_THREADS"]))
-
-# MKL_NUM_THREADS: Intel MKL (行列演算ライブラリ) で用いるスレッド数を指定
-os.environ.setdefault("MKL_NUM_THREADS", "4")  # GPU使用時はCPUスレッド数を削減
-
-# NUMEXPR_MAX_THREADS: numexprライブラリの最大スレッド数（内部で使われることがある）を指定
-os.environ.setdefault("NUMEXPR_MAX_THREADS", "4")  # GPU使用時はCPUスレッド数を削減
-
-# torch.set_num_interop_threads: 異なる並列バックエンド間での競合を抑えるためのスレッド数
-torch.set_num_interop_threads(2)  # GPU使用時はCPUスレッド数を削減
-
-# macOS GPU（MPS）の設定
-os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")  # MPSが利用できない場合のCPUフォールバック
-os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")  # MPSメモリ使用量の最適化
-
-# Hugging Face Hubへのアクセスを完全に無効化
-os.environ["HF_HUB_OFFLINE"] = "1"
-os.environ["TRANSFORMERS_OFFLINE"] = "1"
-
-# macOS GPU（MPS）デバイス設定
+"""
+macOS GPU（Metal Performance Shaders）環境での最適化設定
+"""
+# MPS (Metal Performance Shaders) が利用可能かの判定
 if not torch.backends.mps.is_available():
-    raise RuntimeError("macOS GPU (MPS) が利用できません。このスクリプトはmacOS GPU環境でのみ実行可能です。")
+    raise RuntimeError("MPS (Metal Performance Shaders) が利用できません。このスクリプトはmacOS GPU環境でのみ実行可能です。")
 
+# OS環境変数
+os.environ.setdefault("OMP_NUM_THREADS", "4")                     # PyTorch内部で使われているOpenMP (線形計算ライブラリ) のスレッド数制御
+os.environ.setdefault("MKL_NUM_THREADS", "4")                     # PyTorch内部で使われているIntel MKL (行列演算ライブラリ) のスレッド数制御
+os.environ.setdefault("NUMEXPR_MAX_THREADS", "4")                 # transformers内部で使われているnumexpr (数式評価高速化ライブラリ) の最大スレッド数制御
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")         # MPSが利用できない場合のCPUフォールバック有効化
+os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")  # MPSのメモリ使用量の最適化 (0.0: 最小限のメモリ使用)
+
+# PyTorch内でのスレッド制御
+torch.set_num_threads(int(os.environ["OMP_NUM_THREADS"]))         # PyTorchがCPU計算に使うスレッド数制御
+torch.set_num_interop_threads(2)                                  # 異なる並列バックエンド間での競合を抑えるためのスレッド数制御
+
+# MPS (Metal Performance Shaders) デバイスの設定
 device = torch.device("mps")
-print("macOS GPU (MPS) が利用可能です。GPUを使用してトレーニングを実行します。")
+print("MPS (Metal Performance Shaders) が利用可能です。GPUを使用してトレーニングを実行します。")
 print(f"使用デバイス: {device}")
 
 
