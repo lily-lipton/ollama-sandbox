@@ -1,6 +1,6 @@
 import os, torch, transformers, json
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from datasets import load_dataset, DatasetDict, Dataset
+from transformers import AutoTokenizer, AutoModelForCausalLM, EarlyStoppingCallback
+from datasets import DatasetDict, Dataset
 from trl import SFTTrainer
 from peft import LoraConfig
 
@@ -88,11 +88,25 @@ if hasattr(model, "gradient_checkpointing_enable"):
 """
 データセットの読み込み
 """
-# 社内FAQデータを読み込み
-def load_faq_dataset(file_path):
-    
+# 教師データセットを読み込み、DatasetDictオブジェクトを返す
+# 返却値の構造：
+#     DatasetDict({
+#         train: Dataset({
+#             features: ['output', 'input', 'instruction'],
+#             num_rows: 15015
+#         }),
+#         validation: Dataset({
+#             features: ['output', 'input', 'instruction'],
+#             num_rows: 2000
+#         }),
+#         test: Dataset({
+#             features: ['output', 'input', 'instruction'],
+#             num_rows: 2000
+#         })
+#     })
+def load_dataset(file_path):
     data = {"train": [], "validation": [], "test": []}
-    
+
     with open(file_path, 'r', encoding='utf-8') as f:
         for line in f:
             item = json.loads(line.strip())
@@ -111,18 +125,28 @@ def load_faq_dataset(file_path):
         "test": test_dataset
     })
 
-# 社内FAQデータを読み込み
-data = load_faq_dataset("data/sample/help_list_tool_login.jsonl")
+# 教師データセットを読み込み
+data = load_dataset("data/sample/help_list_tool_login.jsonl")
 
-# DatasetDictから個別のDatasetを取得
+# DatasetDictから各Datasetを取得
 train_dataset = data["train"]
 eval_dataset = data["validation"]
 test_dataset = data["test"]
 
-# ここで tokenizer による map は不要（SFTTrainer に任せる）
-# data = data.map(lambda samples: tokenizer(samples["quote"]), batched=True)
-
-# SFTTrainerに渡す生テキストを作る関数（バッチ前提）
+# SFTTrainer用のデータ整形を行う (バッチ処理版)
+# なお、ここではバッチ処理の形式を取っているが、単一サンプル処理 + dataset.map() でも同様の処理が可能
+# 入力値 (バッチデータ) の構造:
+#    batch = {
+#        "instruction": ["質問1", "質問2", "質問3", …],
+#        "input": ["詳細1", "", "詳細3", …], 
+#        "output": ["回答1", "回答2", "回答3", …]
+#    }
+# 返却値の構造:
+#     [
+#         "質問: {instruction}\n詳細: {input}\n回答: {output}{EOS}",
+#         "質問: {instruction}\n\n回答: {output}{EOS}",
+#         :
+#     ]
 def formatting_func(batch):
     outputs = batch.get("output", [])
     if not outputs:
@@ -146,125 +170,107 @@ def formatting_func(batch):
             text = f"質問: {instr}\n回答: {out}{tokenizer.eos_token}"
         texts.append(text)
 
-    return texts  # SFTTrainerはバッチサイズ分の文字列リストを要求する
+    return texts
 
 
 """
 LoRA設定
 """
 lora_config = LoraConfig(
-    r=32,                    # 表現力を向上させるため増加（8→32）
-    lora_alpha=64,           # rの2倍に設定（32→64）
-    lora_dropout=0.05,       # 過学習を防ぎつつ学習効率を向上（0.1→0.05）
+    r=32,                    # 数値が大きいほど追加の学習パラメータが多くなり表現力が向上する
+    lora_alpha=64,           # LoRAのスケーリング係数 (`r`の2倍程度がよく使われる)
+    lora_dropout=0.05,       # LoRA層にだけ適用するドロップアウト (一部の重みを一時的に無効化)。値を下げるとより多くの情報を使い、上げるとランダム要素が入り過学習を防ぎやすくなる。0.05は「やや控えめ」な値。
     target_modules=[
-        "q_proj", "o_proj", "k_proj", "v_proj",  # Attention周り
-        "gate_proj", "up_proj", "down_proj"      # MLP周り（GemmaはSwiGLU系）
+        "q_proj", "o_proj", "k_proj", "v_proj",  # Attention (重要単語を判別する仕組み) の主要部分。LoRAで軽量に学習パラメータを加える対象
+        "gate_proj", "up_proj", "down_proj"      # MLP (文章をより深く理解する部分) の層。GemmaはSwiGLUという形式なのでこの3つ
     ],
-    task_type="CAUSAL_LM",
-    bias="none",             # バイアスは学習しない（メモリ効率化）
-    use_rslora=True,         # Rank-Stabilized LoRA（学習安定性向上）
+    task_type="CAUSAL_LM",    # モデルの種類
+    bias="none",              # 追加のバイアス項を使わない (LoRAの場合は基本不要)
+    use_rslora=True,          # Rank-Stabilized LoRA (RS-LoRA) を使用する = 学習が安定しやすくなる
 )
 
 
 """
-トレーニング設定 - macOS GPU最適化版
+トレーニング設定
 """
-# macOS GPU（MPS）用の最適化されたトレーニング設定
-per_device_train_batch_size = 2      # MPSではバッチサイズを増やせる
-per_device_eval_batch_size = 2       # バリデーション用バッチサイズ
-gradient_accumulation_steps = 8      # 実効バッチサイズ16（2×8）
-fp16_enabled = False                 # MPSではbf16が推奨
-bf16_enabled = True                  # MPSではbf16が推奨
-dataloader_num_workers = 0           # マルチプロセシングを無効化
-dataloader_pin_memory = False        # macOSではFalseが安定
-print("macOS GPU (MPS) 用の最適化設定を適用します。")
+per_device_train_batch_size = 2      # 1デバイス (GPU) あたりの学習用バッチサイズ
+per_device_eval_batch_size = 2       # 1デバイス (GPU) あたりのバリデーション用バッチサイズ
+gradient_accumulation_steps = 8      # 勾配の累積回数 (この回数分バッチを積み重ねてから1回パラメータを更新する
+fp16_enabled = False                 # float16 (FP16) 半精度演算の有効化フラグ (MPSでは未対応または十分な恩恵がないためFalse)
+bf16_enabled = True                  # bfloat16(BF16) 半精度演算の有効化フラグ (MPSではbf16による計算精度向上や安定性・高速化が期待できるためTrue推奨)
+dataloader_num_workers = 0           # データローダーで使用するワーカープロセス数 (0にするとシングルプロセスのみ使用。macOSではマルチプロセス時にエラーが発生しやすいため、0が推奨値)
+dataloader_pin_memory = False        # PyTorchのdataloaderでメモリをpinned(固定)するかどうか (WindowsやCUDA環境ではTrueが高速化に繋がることが多いが、MPSではむしろメモリ確保失敗など安定しないのでFalseにする)
 
 training_args = transformers.TrainingArguments(
-    output_dir="outputs",
-    per_device_train_batch_size=per_device_train_batch_size,
-    per_device_eval_batch_size=per_device_eval_batch_size,
-    gradient_accumulation_steps=gradient_accumulation_steps,
+    output_dir="outputs",                  # 学習成果物 (モデルやログなど) を出力するディレクトリ
+    per_device_train_batch_size=per_device_train_batch_size,   # 1デバイス (GPU) の訓練用バッチサイズ
+    per_device_eval_batch_size=per_device_eval_batch_size,     # 1デバイス (GPU) の検証用バッチサイズ
+    gradient_accumulation_steps=gradient_accumulation_steps,   # 勾配累積回数
+    learning_rate=1e-4,                    # 基本の学習率 (AdamW最適化器でよく使われる値、モデルやデータに応じて変更推奨)
 
-    # warmup_steps=5,                    # 小規模データセットに適したウォームアップ
-    # max_steps=100,                     # 小規模データセットに適した学習ステップ数
-    warmup_steps=1,                    # 検証用：最小ウォームアップ
-    max_steps=5,                       # 検証用：5ステップのみ（約1-2分で完了）
-    
-    learning_rate=1e-4,                # より安定した学習率
+    warmup_steps=5,                        # 最初の数ステップは小さい学習率でウォームアップ (急な学習率変動による不安定化を防ぐ)
+    max_steps=100,                         # 総学習ステップ数。データ量や目的に合わせて調整
+    logging_steps=5,                       # ログ (損失や評価値など) を何ステップごとに出力するか
+    eval_steps=10,                         # バリデーション (検証) を何ステップごとに行うか
+    save_steps=50,                         # モデルをチェックポイントとして何ステップごとに保存するか
 
-    # logging_steps=5,                   # ログ頻度を調整
-    # eval_steps=10,                     # バリデーション実行頻度（10ステップごと）
-    # save_steps=50,                     # チェックポイント保存頻度調整
-    logging_steps=1,                   # 検証用：毎ステップログ出力
-    eval_steps=2,                      # 検証用：2ステップごとに評価
-    save_steps=4,                      # 検証用：eval_stepsの倍数（2×2=4）
+    # 以下は検証用
+    # warmup_steps=1,
+    # max_steps=5,
+    # logging_steps=1,
+    # eval_steps=2,
+    # save_steps=4,
 
-    save_total_limit=3,                # より多くのチェックポイントを保持
-    fp16=fp16_enabled,                 # デバイスに応じた精度設定
-    bf16=bf16_enabled,                 # デバイスに応じた精度設定
-    # ↓ デバイス最適化オプション
-    optim="adamw_torch",               # より効率的なオプティマイザー
-    dataloader_num_workers=dataloader_num_workers,
-    dataloader_pin_memory=dataloader_pin_memory,
-    disable_tqdm=False,
-    report_to="none",
-    # 追加の最適化オプション
-    # dataloader_prefetch_factor=2,      # データローダーの効率化（num_workers=0では使用不可）
-    label_smoothing_factor=0.1,        # 過学習防止
-    max_grad_norm=1.0,                 # 勾配クリッピング
-    # Early Stopping設定
-    load_best_model_at_end=True,       # 最良モデルを最終的に読み込み
-    metric_for_best_model="eval_loss",  # 評価指標（損失）
-    greater_is_better=False,           # 損失は小さい方が良い
-    eval_strategy="steps",             # ステップごとに評価
-    save_strategy="steps",              # ステップごとに保存
+    save_total_limit=3,                    # 保存するチェックポイント (モデルの節目) 数の上限、それを超えた古いものは自動消去
+    fp16=fp16_enabled,                     # float16の有効化フラグ
+    bf16=bf16_enabled,                     # bfloat16の有効化フラグ
+    optim="adamw_torch",                   # パラメータ最適化アルゴリズム (PyTorch標準のAdamW)
+    dataloader_num_workers=dataloader_num_workers,    # DataLoaderに使う並列プロセス数 (macOSは0で安定・エラー回避)
+    dataloader_pin_memory=dataloader_pin_memory,      # DataLoaderがバッチデータを"pinned memory"に置くか。MPSはFalse推奨
+    disable_tqdm=False,                    # プログレスバー (tqdm) 表示を無効化するか。Trueにすると標準出力が静かになる
+    report_to="none",                      # 学習経過レポートの送信先 (Hugging Face等への自動連携)。"none"でローカルのみ
+    label_smoothing_factor=0.1,            # ラベルスムージングで過学習防止 (0.1は控えめだが効果的)
+    max_grad_norm=1.0,                     # 1回あたりの勾配の最大ノルム値 (値を超えたらクリッピングし暴走学習防止)
+
+    # ---- Early Stopping & モデル保存戦略 ----
+    load_best_model_at_end=True,           # 学習最後に「評価損失が最も良い」チェックポイントを自動で読み込む
+    metric_for_best_model="eval_loss",     # どの指標で「ベスト」を決めるか (ここではバリデーション用損失)
+    greater_is_better=False,               # 指標が小さいほど良い (損失系の場合はFalse, accuracyなどはTrue)
+    eval_strategy="steps",                 # バリデーション評価のタイミング ("steps"だとNステップごと)
+    save_strategy="steps",                 # モデル保存のタイミング ("steps"だとNステップごと)
 )
 
+
 """
-Early Stopping コールバック
+SFTTrainerを用いたデータローダ構築
 """
-from transformers import EarlyStoppingCallback
+MAX_SEQ_LENGTH = 768         # 1サンプルの最大シーケンス長 (トークン数)。入出力文を連結した場合の最大トークン長。モデルやリソースに応じて調整する。FAQの回答+質問なら768が適切。
+PACKING_ENABLED = False      # 複数の短い文を1シーケンスに "パッキング" して詰めて効率化するかどうか。Falseだと各サンプル1文ずつ扱う。macOS環境や少量データではFalse推奨。
+NUM_OF_SEQUENCES = 1024      # SFTTrainerのデータ前処理 (packやchunk) 時に詰め込む最大シーケンス数。大規模データで効率を重視する際に使うが、通常はデフォルト値でOK。
+CHARS_PER_TOKEN = 3.6        # 日本語文字列をトークンに換算するための目安。日本語は1トークンあたり平均3.6文字程度 (OpenAI/Gemma系換算値)。長さ見積もりや下処理に利用。
 
 early_stopping_callback = EarlyStoppingCallback(
-    early_stopping_patience=3,  # 3回連続で改善しなければ停止
+    early_stopping_patience=3,       # 3回連続で改善しなければ停止
     early_stopping_threshold=0.001,  # 改善の閾値
 )
-
-"""
-SFTTrainerを用いたデータローダ構築 - バリデーション対応
-"""
-# データセット関連設定（formatting_funcで共有利用）
-MAX_SEQ_LENGTH = 768
-PACKING_ENABLED = False
-NUM_OF_SEQUENCES = 1024
-CHARS_PER_TOKEN = 3.6
 
 trainer = SFTTrainer(
     model=model,
     peft_config=lora_config,
     train_dataset=train_dataset,
-    eval_dataset=eval_dataset,          # バリデーションデータを追加
+    eval_dataset=eval_dataset,
     formatting_func=formatting_func,
     args=training_args,
     tokenizer=tokenizer,
-    callbacks=[early_stopping_callback], # Early Stoppingコールバックを追加
-    # max_seq_length は "実データの長さ" に合わせるのがコツ
-    # 社内FAQデータの回答は200-500文字程度なので、768で十分
-    # GCE VMでのCPU推論も考慮して適度な長さに設定
+    callbacks=[early_stopping_callback],  # Early Stoppingコールバック
     max_seq_length=MAX_SEQ_LENGTH,
-    packing=PACKING_ENABLED,  # packingを無効にして各サンプルを個別処理
+    packing=PACKING_ENABLED,
 )
 
-# テストデータセットもSFTTrainerで処理するための追加設定
-# テストデータセットをSFTTrainerの形式に変換
-# 注意: SFTTrainerは生のテキストデータを期待するため、事前フォーマットは不要
-# test_dataset_formatted = test_dataset.map(formatting_func, remove_columns=test_dataset.column_names)
-
-def main():
+if __name__ == '__main__':
     """
-    メイン実行関数
+    SFTTrainerを用いた学習実行
     """
-    # 学習実行
     trainer.train()
 
     """
@@ -272,11 +278,8 @@ def main():
     """
     print("\n=== テストデータでの最終評価 ===")
 
-    # # テストデータセットをSFTTrainerの形式に変換
-    # test_dataset_formatted = test_dataset.map(formatting_func, remove_columns=test_dataset.column_names)
-    # test_results = trainer.evaluate(eval_dataset=test_dataset_formatted, metric_key_prefix="test")
-
     # テストデータセットもSFTTrainerのメソッドで事前トークナイズして評価
+    # (SFTTrainerは学習/検証データしか自動処理しないため、テストデータを手動で同じ形式に変換する必要がある)
     test_dataset_prepared = trainer._prepare_dataset(
         test_dataset,
         tokenizer=tokenizer,
@@ -303,6 +306,3 @@ def main():
     print(f"LoRA adapter saved to {adapter_path}")
     print(f"最終テスト損失: {test_results['test_loss']:.4f}")
     print("学習が正常に完了しました。")
-
-if __name__ == '__main__':
-    main()
