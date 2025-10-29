@@ -29,9 +29,13 @@ from datetime import datetime, timezone, timedelta
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
 
+# MPS (Metal Performance Shaders) が利用可能かの判定
+if not torch.backends.mps.is_available():
+    raise RuntimeError("MPS (Metal Performance Shaders) が利用できません。このスクリプトはmacOS GPU環境でのみ実行可能です。")
+
 MODEL_NAME = "gemma-2-2b"
 BASE_DIR = f"models/{MODEL_NAME}"  # ベースモデル
-ADAPTER_DIR = f"models/{MODEL_NAME}-lora"  # LoRA差分の出力先
+ADAPTER_DIR = f"models/gemma-2-2b-lora-20251029-124544"  # LoRA差分の出力先
 
 JST = timezone(timedelta(hours=9))
 timestamp = datetime.now(JST).strftime("%Y%m%d-%H%M%S")
@@ -43,7 +47,7 @@ OUT_DIR = f"models/{MODEL_NAME}-merged-{timestamp}"  # マージ後の保存先
 # torch.bfloat16 (BF16) あるいは torch.float16 (FP16)
 #     - GPU（特にNVIDIA）を使う場合は高速化・省メモリ化のために利用可能
 #     - 但し、CPU Onlyだとエラーになる事が多いため、GPUのときのみ有効にする
-dtype = torch.float32  # GCE VMでのCPU推論を考慮してFP32を維持
+dtype = torch.bfloat16  # macOS GPU (MPS) での高速化・省メモリ化
 
 print("Loading base model...")
 base = AutoModelForCausalLM.from_pretrained(
