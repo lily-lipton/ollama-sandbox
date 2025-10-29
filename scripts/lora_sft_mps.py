@@ -230,7 +230,8 @@ training_args = transformers.TrainingArguments(
     dataloader_num_workers=dataloader_num_workers,    # DataLoaderに使う並列プロセス数 (macOSは0で安定・エラー回避)
     dataloader_pin_memory=dataloader_pin_memory,      # DataLoaderがバッチデータを"pinned memory"に置くか。MPSはFalse推奨
     disable_tqdm=False,                    # プログレスバー (tqdm) 表示を無効化するか。Trueにすると標準出力が静かになる
-    report_to="none",                      # 学習経過レポートの送信先 (Hugging Face等への自動連携)。"none"でローカルのみ
+    report_to="tensorboard",               # TensorBoardでログを可視化
+    logging_dir="outputs/logs",            # ログファイルの保存先
     label_smoothing_factor=0.1,            # ラベルスムージングで過学習防止 (0.1は控えめだが効果的)
     max_grad_norm=1.0,                     # 1回あたりの勾配の最大ノルム値 (値を超えたらクリッピングし暴走学習防止)
 

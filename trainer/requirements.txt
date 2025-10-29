@@ -7,3 +7,4 @@ datasets
 trl==0.8.6
 peft
 safetensors
+tensorboard
