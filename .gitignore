@@ -1,4 +1,5 @@
 models/
 data/
+outputs/
 .env
 .DS_Store
