@@ -1,6 +1,7 @@
 import os, torch, transformers, json
 from datetime import datetime, timezone, timedelta
 from transformers import AutoTokenizer, AutoModelForCausalLM, EarlyStoppingCallback
+from transformers.trainer_utils import get_last_checkpoint
 from datasets import DatasetDict, Dataset
 from trl import SFTTrainer
 from peft import LoraConfig
@@ -272,7 +273,15 @@ if __name__ == '__main__':
     """
     SFTTrainerを用いた学習実行
     """
-    trainer.train()
+    # 既存のチェックポイントがあるかチェック
+    last_ckpt = get_last_checkpoint(training_args.output_dir)
+    if last_ckpt:
+        print(f"既存のチェックポイントを発見しました: {last_ckpt}")
+        print("チェックポイントから学習を再開します...")
+        trainer.train(resume_from_checkpoint=last_ckpt)
+    else:
+        print("新しい学習を開始します...")
+        trainer.train()
 
     """
     テストデータでの最終評価
