@@ -25,6 +25,7 @@ LoRAで学習した差分 (outputs/lora_adapter) をベースモデルにマー�
 
 import os
 import torch
+from datetime import datetime, timezone, timedelta
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
 
@@ -32,12 +33,14 @@ from peft import PeftModel
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
-# 使用するモデルを指定（gemma-2-2b または gemma-2-9b）
-MODEL_NAME = "gemma-2-2b"  # 必要に応じて "gemma-2-9b" に変更
-
-BASE_DIR = f"/trainer/models/{MODEL_NAME}"         # ベースモデル
+# 各種設定値
+MODEL_NAME = "gemma-2-2b"
+BASE_DIR = f"/trainer/models/{MODEL_NAME}"  # ベースモデル
 ADAPTER_DIR = f"/trainer/models/{MODEL_NAME}-lora"  # LoRA差分の出力先
-OUT_DIR = f"/trainer/models/{MODEL_NAME}-merged"   # マージ後の保存先
+
+JST = timezone(timedelta(hours=9))
+timestamp = datetime.now(JST).strftime("%Y%m%d-%H%M%S")
+OUT_DIR = f"/trainer/models/{MODEL_NAME}-merged-{timestamp}"  # マージ後の保存先
 
 # モデルを読み込む際の重み型 (dtype) を指定
 # torch.float32 (FP32)

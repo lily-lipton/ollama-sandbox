@@ -1,4 +1,5 @@
 import os, torch, transformers, json
+from datetime import datetime, timezone, timedelta
 from transformers import AutoTokenizer, AutoModelForCausalLM, EarlyStoppingCallback
 from datasets import DatasetDict, Dataset
 from trl import SFTTrainer
@@ -276,7 +277,7 @@ if __name__ == '__main__':
     """
     テストデータでの最終評価
     """
-    print("\n=== テストデータでの最終評価 ===")
+    print("\n--- テストデータでの最終評価 ---")
 
     # テストデータセットもSFTTrainerのメソッドで事前トークナイズして評価
     # (SFTTrainerは学習/検証データしか自動処理しないため、テストデータを手動で同じ形式に変換する必要がある)
@@ -298,11 +299,13 @@ if __name__ == '__main__':
     adapterの保存
     """
     # LoRA差分（adapter）のみ保存
-    # 出力先は models/ 配下に統一
-    adapter_path = f"models/{MODEL_NAME}-lora"
+    # 出力先は models/ 配下に統一し、末尾に生成日時 (JST) を追加
+    JST = timezone(timedelta(hours=9))
+    timestamp = datetime.now(JST).strftime("%Y%m%d-%H%M%S")
+    adapter_path = f"models/{MODEL_NAME}-lora-{timestamp}"
     trainer.model.save_pretrained(adapter_path)
 
-    print("\n=== 学習完了 ===")
+    print("\n--- 学習完了 ---")
     print(f"LoRA adapter saved to {adapter_path}")
     print(f"最終テスト損失: {test_results['test_loss']:.4f}")
     print("学習が正常に完了しました。")
