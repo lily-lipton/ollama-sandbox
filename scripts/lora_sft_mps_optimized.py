@@ -1,4 +1,4 @@
-import os, torch, transformers, json
+import os, torch, transformers, json, gc
 from datetime import datetime, timezone, timedelta
 from transformers import AutoTokenizer, AutoModelForCausalLM, EarlyStoppingCallback
 from transformers.trainer_utils import get_last_checkpoint
@@ -37,7 +37,7 @@ torch.mps.empty_cache()  # MPSキャッシュをクリア
 モデルをローカルからロード
 """
 # 使用するモデルを指定
-MODEL_NAME = "gemma-2-2b"
+MODEL_NAME = "gemma-2-9b"
 MODEL_DIR = f"models/{MODEL_NAME}"
 
 # AutoTokenizer.from_pretrained()
@@ -292,24 +292,22 @@ if __name__ == '__main__':
     """
     print("\n--- テストデータでの最終評価 ---")
     
+    # テスト評価時のメモリ制限を設定
+    print("テスト評価用のメモリ制限を設定します...")
+    os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.3"  # MPSメモリ使用量を30%に制限
+    os.environ["MALLOC_ARENA_MAX"] = "2"  # メモリアリーナ数を制限
+    os.environ["OMP_NUM_THREADS"] = "2"   # スレッド数を削減
+    os.environ["MKL_NUM_THREADS"] = "2"   # MKLスレッド数を削減
+
     try:
-        # メモリ使用量を抑えるため、テストデータを小さなバッチに分割して評価
-        max_test_samples = min(50, len(test_dataset))  # 最大50サンプルに制限
-        test_dataset_limited = test_dataset.select(range(max_test_samples))
-        print(f"テストデータを {max_test_samples} サンプルに制限して評価します")
-        
-        # 評価用のバッチサイズを小さく設定
-        original_eval_batch_size = trainer.args.per_device_eval_batch_size
-        trainer.args.per_device_eval_batch_size = 1  # 評価時はバッチサイズ1に設定
-        
         # テストデータセットをSFTTrainerのメソッドで事前トークナイズして評価
         # (SFTTrainerは学習/検証データしか自動処理しないため、テストデータを手動で同じ形式に変換する必要がある)
         test_dataset_prepared = trainer._prepare_dataset(
-            test_dataset_limited,
+            test_dataset,
             tokenizer=tokenizer,
             packing=PACKING_ENABLED,
             dataset_text_field=None,
-            max_seq_length=MAX_SEQ_LENGTH,
+            max_seq_length=384,  # シーケンス長を384に制限
             formatting_func=formatting_func,
             num_of_sequences=NUM_OF_SEQUENCES,
             chars_per_token=CHARS_PER_TOKEN,
@@ -317,13 +315,11 @@ if __name__ == '__main__':
         )
         
         # メモリクリア
+        gc.collect()
         torch.mps.empty_cache()
         
         test_results = trainer.evaluate(eval_dataset=test_dataset_prepared, metric_key_prefix="test")
         print(f"テスト損失: {test_results['test_loss']:.4f}")
-        
-        # 元のバッチサイズに戻す
-        trainer.args.per_device_eval_batch_size = original_eval_batch_size
         
     except RuntimeError as e:
         if "out of memory" in str(e).lower() or "memory" in str(e).lower():
@@ -336,6 +332,13 @@ if __name__ == '__main__':
         print(f"テストデータ評価中にエラーが発生しました: {e}")
         print("テストデータの評価をスキップします。")
         test_results = {"test_loss": float('inf')}
+    finally:
+        # テスト評価後に元の設定を復元
+        print("テスト評価完了後、元の設定を復元します...")
+        os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.0"
+        os.environ["MALLOC_ARENA_MAX"] = "4"
+        os.environ["OMP_NUM_THREADS"] = "4"
+        os.environ["MKL_NUM_THREADS"] = "4"
 
     """
     adapterの保存
