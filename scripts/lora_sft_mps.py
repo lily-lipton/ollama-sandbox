@@ -5,6 +5,10 @@ from transformers.trainer_utils import get_last_checkpoint
 from datasets import DatasetDict, Dataset
 from trl import SFTTrainer
 from peft import LoraConfig
+from dotenv import load_dotenv
+
+# .envファイルから環境変数を読み込む
+load_dotenv()
 
 """
 macOS GPU（Metal Performance Shaders）環境での最適化設定
@@ -33,8 +37,8 @@ print(f"使用デバイス: {device}")
 """
 モデルをローカルからロード
 """
-# 使用するモデルを指定
-MODEL_NAME = "gemma-2-2b"
+# 使用するモデルを指定　　（.envから取得）
+MODEL_NAME = os.getenv("MODEL_NAME", "gemma-3-4b-it")
 MODEL_DIR = f"models/{MODEL_NAME}"
 
 # AutoTokenizer.from_pretrained()
@@ -127,8 +131,9 @@ def load_dataset(file_path):
         "test": test_dataset
     })
 
-# 教師データセットを読み込み
-data = load_dataset("data/sample/help_list_tool_login.jsonl")
+# 教師データセットを読み込み （.envから取得）
+dataset_path = os.getenv("DATASET_PATH", "data/help_list_tool_login.jsonl")
+data = load_dataset(dataset_path)
 
 # DatasetDictから各Datasetを取得
 train_dataset = data["train"]
@@ -270,6 +275,9 @@ trainer = SFTTrainer(
     packing=PACKING_ENABLED,
 )
 
+# 学習後の最終テスト評価をスキップするかどうか （.envから取得、デフォルトはFalse）
+SKIP_FINAL_TEST = os.getenv("SKIP_FINAL_TEST", "False").lower() == "true"
+
 if __name__ == '__main__':
     """
     SFTTrainerを用いた学習実行
@@ -287,23 +295,26 @@ if __name__ == '__main__':
     """
     テストデータでの最終評価
     """
-    print("\n--- テストデータでの最終評価 ---")
-
-    # テストデータセットもSFTTrainerのメソッドで事前トークナイズして評価
-    # (SFTTrainerは学習/検証データしか自動処理しないため、テストデータを手動で同じ形式に変換する必要がある)
-    test_dataset_prepared = trainer._prepare_dataset(
-        test_dataset,
-        tokenizer=tokenizer,
-        packing=PACKING_ENABLED,
-        dataset_text_field=None,
-        max_seq_length=MAX_SEQ_LENGTH,
-        formatting_func=formatting_func,
-        num_of_sequences=NUM_OF_SEQUENCES,
-        chars_per_token=CHARS_PER_TOKEN,
-        remove_unused_columns=trainer.args.remove_unused_columns,
-    )
-    test_results = trainer.evaluate(eval_dataset=test_dataset_prepared, metric_key_prefix="test")
-    print(f"テスト損失: {test_results['test_loss']:.4f}")
+    if SKIP_FINAL_TEST:
+        print("\n--- 最終テスト評価はスキップされました (SKIP_FINAL_TEST=True) ---")
+        test_results = None
+    else:
+        print("\n--- テストデータでの最終評価 ---")
+        # テストデータセットもSFTTrainerのメソッドで事前トークナイズして評価
+        # (SFTTrainerは学習/検証データしか自動処理しないため、テストデータを手動で同じ形式に変換する必要がある)
+        test_dataset_prepared = trainer._prepare_dataset(
+            test_dataset,
+            tokenizer=tokenizer,
+            packing=PACKING_ENABLED,
+            dataset_text_field=None,
+            max_seq_length=MAX_SEQ_LENGTH,
+            formatting_func=formatting_func,
+            num_of_sequences=NUM_OF_SEQUENCES,
+            chars_per_token=CHARS_PER_TOKEN,
+            remove_unused_columns=trainer.args.remove_unused_columns,
+        )
+        test_results = trainer.evaluate(eval_dataset=test_dataset_prepared, metric_key_prefix="test")
+        print(f"テスト損失: {test_results['test_loss']:.4f}")
 
     """
     adapterの保存
@@ -317,5 +328,8 @@ if __name__ == '__main__':
 
     print("\n--- 学習完了 ---")
     print(f"LoRA adapter saved to {adapter_path}")
-    print(f"最終テスト損失: {test_results['test_loss']:.4f}")
+    if test_results is not None:
+        print(f"最終テスト損失: {test_results['test_loss']:.4f}")
+    else:
+        print("最終テスト損失: skipped")
     print("学習が正常に完了しました。")

@@ -28,14 +28,21 @@ import torch
 from datetime import datetime, timezone, timedelta
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
+from dotenv import load_dotenv
+
+# .envファイルから環境変数を読み込む
+load_dotenv()
 
 # MPS (Metal Performance Shaders) が利用可能かの判定
 if not torch.backends.mps.is_available():
     raise RuntimeError("MPS (Metal Performance Shaders) が利用できません。このスクリプトはmacOS GPU環境でのみ実行可能です。")
 
-MODEL_NAME = "gemma-2-2b"
+# .envから取得
+MODEL_NAME = os.getenv("MODEL_NAME", "gemma-3-4b-it")
 BASE_DIR = f"models/{MODEL_NAME}"  # ベースモデル
-ADAPTER_DIR = f"models/gemma-2-2b-lora-20251029-124544"  # LoRA差分の出力先
+ADAPTER_DIR = os.getenv("ADAPTER_DIR")  # LoRA差分の出力先
+if not ADAPTER_DIR:
+    raise ValueError("ADAPTER_DIR環境変数が設定されていません。.envファイルでADAPTER_DIRを設定してください。")
 
 JST = timezone(timedelta(hours=9))
 timestamp = datetime.now(JST).strftime("%Y%m%d-%H%M%S")

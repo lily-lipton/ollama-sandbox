@@ -2,4 +2,5 @@ models/
 data/
 outputs/
 .env
+!.env.example
 .DS_Store
