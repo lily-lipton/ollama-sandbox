@@ -1,4 +1,4 @@
-import os, torch, transformers, json
+import os, torch, transformers, json, shutil, glob
 from datetime import datetime, timezone, timedelta
 from transformers import AutoTokenizer, AutoModelForCausalLM, EarlyStoppingCallback
 from transformers.trainer_utils import get_last_checkpoint
@@ -332,4 +332,38 @@ if __name__ == '__main__':
         print(f"最終テスト損失: {test_results['test_loss']:.4f}")
     else:
         print("最終テスト損失: skipped")
+    
+    """
+    チェックポイントファイルのバックアップ移動
+    """
+    # データセット名を取得（パスからファイル名を抽出、拡張子を除去）
+    dataset_name = os.path.splitext(os.path.basename(dataset_path))[0]
+    
+    # バックアップディレクトリ名を生成（yyyy-mm-dd-HH-MM-SS形式）
+    timestamp = datetime.now(JST).strftime("%Y%m%d-%H%M%S")
+    backup_dir = f"outputs/backups/{timestamp}_{MODEL_NAME}_{dataset_name}"
+    
+    # バックアップディレクトリを作成
+    os.makedirs(backup_dir, exist_ok=True)
+    
+    # outputs/ 配下のcheckpoint-* ディレクトリを検索
+    checkpoint_pattern = os.path.join(training_args.output_dir, "checkpoint-*")
+    checkpoint_dirs = glob.glob(checkpoint_pattern)
+    
+    if checkpoint_dirs:
+        print(f"\n--- チェックポイントファイルのバックアップ移動 ---")
+        for checkpoint_dir in checkpoint_dirs:
+            checkpoint_name = os.path.basename(checkpoint_dir)
+            dest_path = os.path.join(backup_dir, checkpoint_name)
+            
+            # チェックポイントディレクトリをバックアップディレクトリに移動
+            if os.path.exists(dest_path):
+                shutil.rmtree(dest_path)  # 既存の場合は削除
+            shutil.move(checkpoint_dir, dest_path)
+            print(f"移動完了: {checkpoint_dir} -> {dest_path}")
+        
+        print(f"バックアップ先: {backup_dir}")
+    else:
+        print("\n--- チェックポイントファイルが見つかりませんでした ---")
+    
     print("学習が正常に完了しました。")
