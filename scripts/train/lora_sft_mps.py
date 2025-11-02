@@ -87,7 +87,9 @@ print(f"モデルを {device} に配置しました。")
 
 # 勾配チェックポイント (gradient_checkpointing) を有効化
 # この手法により、トレーニング中のメモリ消費を抑えられるが、計算時間は増加する
+# gradient checkpointing を使用する場合、use_cache は False に設定する必要がある
 if hasattr(model, "gradient_checkpointing_enable"):
+    model.config.use_cache = False
     model.gradient_checkpointing_enable()
 
 
