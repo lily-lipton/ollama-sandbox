@@ -146,37 +146,46 @@ test_dataset = data["test"]
 # なお、ここではバッチ処理の形式を取っているが、単一サンプル処理 + dataset.map() でも同様の処理が可能
 # 入力値 (バッチデータ) の構造:
 #    batch = {
-#        "instruction": ["質問1", "質問2", "質問3", …],
-#        "input": ["詳細1", "", "詳細3", …], 
-#        "output": ["回答1", "回答2", "回答3", …]
+#        "input": ["ユーザー入力1", "ユーザー入力2", "ユーザー入力3", …], 
+#        "output": ["アシスタント回答1", "アシスタント回答2", "アシスタント回答3", …],
+#        "system": ["システムプロンプト1", "", "システムプロンプト3", …]  # オプション
 #    }
 # 返却値の構造:
-#     [
-#         "質問: {instruction}\n詳細: {input}\n回答: {output}{EOS}",
-#         "質問: {instruction}\n\n回答: {output}{EOS}",
-#         :
-#     ]
+#     ベースモデルの chat_template に従って整形されたテキストのリスト
 def formatting_func(batch):
     outputs = batch.get("output", [])
     if not outputs:
         return []
 
-    instructions = batch.get("instruction")
-    if not instructions:
-        instructions = [""] * len(outputs)
-
-    inputs = batch.get("input")
+    inputs = batch.get("input", [])
     if not inputs:
         inputs = [""] * len(outputs)
 
+    systems = batch.get("system", [])
+    if not systems:
+        systems = [None] * len(outputs)
+
     texts = []
-    for instr, inp, out in zip(instructions, inputs, outputs):
-        instr = instr or ""
-        out = out or ""
-        if inp:
-            text = f"質問: {instr}\n詳細: {inp}\n回答: {out}{tokenizer.eos_token}"
-        else:
-            text = f"質問: {instr}\n回答: {out}{tokenizer.eos_token}"
+    for inp, out, sys in zip(inputs, outputs, systems):
+        # メッセージリストを構築
+        messages = []
+
+        # systemメッセージがある場合は追加
+        if sys and sys.strip():
+            messages.append({"role": "system", "content": sys.strip()})
+
+        # userメッセージを追加
+        messages.append({"role": "user", "content": inp.strip() if inp else ""})
+
+        # assistantメッセージを追加
+        messages.append({"role": "assistant", "content": out.strip() if out else ""})
+
+        # tokenizer.chat_templateを使って整形
+        text = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=False
+        )
         texts.append(text)
 
     return texts
