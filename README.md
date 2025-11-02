@@ -14,6 +14,10 @@ ollama-sandbox
 │   └── Dockerfile         # llama.cppバイナリ等を整備したコンテナ環境
 │   └── requirements.txt
 └── scripts/               # LoRA学習/ベース合成/GGUF変換用スクリプト郡
+    ├── load/              # モデルロード関連スクリプト
+    ├── train/             # ファインチューニング関連スクリプト
+    ├── merge/             # LoRAマージ関連スクリプト
+    └── utils/             # データ変換・ログ表示ユーティリティ
 ```
 
 ## 手順
@@ -30,10 +34,10 @@ docker compose up -d --build
 docker exec -it trainer bash
 
 # LoRA学習
-python3 scripts/lora_sft_macos_gpu.py
+python3 scripts/train/lora_sft_mps.py
 
 # ベース合成
-python3 scripts/merge_lora.py
+python3 scripts/merge/merge_lora.py
 
 # 量子化 (llama-quantizeを使う場合)
 llama-quantize /trainer/models/merged-f32.gguf \
