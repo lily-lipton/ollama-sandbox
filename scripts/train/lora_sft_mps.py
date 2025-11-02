@@ -315,7 +315,11 @@ if __name__ == '__main__':
             chars_per_token=CHARS_PER_TOKEN,
             remove_unused_columns=trainer.args.remove_unused_columns,
         )
+        # プログレスバーを表示するため、disable_tqdmを明示的にFalseに設定
+        original_disable_tqdm = trainer.args.disable_tqdm
+        trainer.args.disable_tqdm = False
         test_results = trainer.evaluate(eval_dataset=test_dataset_prepared, metric_key_prefix="test")
+        trainer.args.disable_tqdm = original_disable_tqdm  # 元の設定に戻す
         print(f"テスト損失: {test_results['test_loss']:.4f}")
 
     """
