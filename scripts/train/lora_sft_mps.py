@@ -221,12 +221,12 @@ training_args = transformers.TrainingArguments(
     eval_steps=10,                         # バリデーション (検証) を何ステップごとに行うか
     save_steps=50,                         # モデルをチェックポイントとして何ステップごとに保存するか
 
-    # 以下は検証用
-    # warmup_steps=1,
-    # max_steps=5,
-    # logging_steps=1,
-    # eval_steps=2,
-    # save_steps=4,
+    # 以下は動作確認用
+    # warmup_steps=0,                        # 動作確認用: ウォームアップなし
+    # max_steps=2,                           # 動作確認用: 最小限のステップ数
+    # logging_steps=1,                       # 動作確認用: 毎ステップログ出力
+    # eval_steps=1,                          # 動作確認用: 毎ステップ評価
+    # save_steps=1,                          # 動作確認用: 毎ステップ保存
 
     save_total_limit=3,                    # 保存するチェックポイント (モデルの節目) 数の上限、それを超えた古いものは自動消去
     fp16=fp16_enabled,                     # float16の有効化フラグ
