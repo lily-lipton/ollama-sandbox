@@ -286,6 +286,10 @@ trainer = SFTTrainer(
     packing=PACKING_ENABLED,
 )
 
+# SFTTrainer初期化後にもuse_cacheをFalseに設定（SFTTrainerが内部でuse_cacheをTrueに戻す場合があるため）
+if hasattr(trainer.model, "config"):
+    trainer.model.config.use_cache = False
+
 # 学習後の最終テスト評価をスキップするかどうか （.envから取得、デフォルトはFalse）
 SKIP_FINAL_TEST = os.getenv("SKIP_FINAL_TEST", "False").lower() == "true"
 
