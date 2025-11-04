@@ -50,14 +50,6 @@ MODEL_DIR = f"models/{MODEL_NAME}"
 #       - リモートで提供されている Python コードを実行できるようになるため、信頼できるソースであることが前提
 tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR, local_files_only=True, trust_remote_code=True)
 
-# Gemmaはpadトークン未定義なので、SFT時のバッチ化のためにpadをEOSに合わせる
-#   - バッチは以下のような2次元配列となり、最大長に要素数を揃えて上げる必要がある
-#         文1: "こんにちは"     => [123, 456, 789]      => [123, 456, 789, <pad>, <pad>]
-#         文2: "今日は良い天気" => [10, 20, 30, 40, 50] => [10, 20, 30, 40, 50]
-#         文3: "こんばんは"     => [111, 222, 333]      => [111, 222, 333, <pad>, <pad>]
-tokenizer.pad_token = tokenizer.eos_token
-tokenizer.padding_side = "right"
-
 # モデルのロード設定
 # macOS GPU (MPS) では bf16 (bfloat16) が推奨
 model_dtype = torch.bfloat16
@@ -84,6 +76,12 @@ model = AutoModelForCausalLM.from_pretrained(
 # モデルをデバイス (MPS) に配置
 model = model.to(device)
 print(f"モデルを {device} に配置しました。")
+
+# トークナイザーの基本設定
+# padトークンが未定義の場合はeosトークンを使用（transformersライブラリが自動的に同期する）
+if tokenizer.pad_token is None:
+    tokenizer.pad_token = tokenizer.eos_token
+tokenizer.padding_side = "right"
 
 # 勾配チェックポイント (gradient_checkpointing) を有効化
 # この手法により、トレーニング中のメモリ消費を抑えられるが、計算時間は増加する
