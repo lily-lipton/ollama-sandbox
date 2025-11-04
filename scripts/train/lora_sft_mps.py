@@ -37,7 +37,7 @@ print(f"使用デバイス: {device}")
 """
 モデルをローカルからロード
 """
-# 使用するモデルを指定　　（.envから取得）
+# 使用するモデルを指定 (.envから取得)
 MODEL_NAME = os.getenv("MODEL_NAME", "gemma-3-4b-it")
 MODEL_DIR = f"models/{MODEL_NAME}"
 
@@ -288,8 +288,9 @@ trainer = SFTTrainer(
 if hasattr(trainer.model, "config"):
     trainer.model.config.use_cache = False
 
-# 学習後の最終テスト評価をスキップするかどうか （.envから取得、デフォルトはFalse）
-SKIP_FINAL_TEST = os.getenv("SKIP_FINAL_TEST", "False").lower() == "true"
+# 学習後の最終テスト評価をスキップするかどうか （.envから取得、デフォルトはTrue）
+# 評価は別スクリプト evaluate_lora_mps.py で実行することを推奨
+SKIP_FINAL_TEST = os.getenv("SKIP_FINAL_TEST", "True").lower() == "true"
 
 if __name__ == '__main__':
     """
@@ -306,13 +307,14 @@ if __name__ == '__main__':
         trainer.train()
 
     """
-    テストデータでの最終評価
+    テストデータでの最終評価（非推奨: 代わりに evaluate_lora_mps.py を使用してください）
     """
     if SKIP_FINAL_TEST:
         print("\n--- 最終テスト評価はスキップされました (SKIP_FINAL_TEST=True) ---")
         test_results = None
     else:
         print("\n--- テストデータでの最終評価 ---")
+        print("注意: 評価は別スクリプト evaluate_lora_mps.py で実行することを推奨します。")
         # テストデータセットもSFTTrainerのメソッドで事前トークナイズして評価
         # (SFTTrainerは学習/検証データしか自動処理しないため、テストデータを手動で同じ形式に変換する必要がある)
         test_dataset_prepared = trainer._prepare_dataset(
@@ -329,7 +331,11 @@ if __name__ == '__main__':
         # プログレスバーを表示するため、disable_tqdmを明示的にFalseに設定
         original_disable_tqdm = trainer.args.disable_tqdm
         trainer.args.disable_tqdm = False
+        # テスト評価時はコールバックを一時的に削除（Early Stoppingはevaluateでも動作するため）
+        original_callbacks = trainer.callback_handler.callbacks.copy()
+        trainer.callback_handler.callbacks = []
         test_results = trainer.evaluate(eval_dataset=test_dataset_prepared, metric_key_prefix="test")
+        trainer.callback_handler.callbacks = original_callbacks  # 元の設定に戻す
         trainer.args.disable_tqdm = original_disable_tqdm  # 元の設定に戻す
         print(f"テスト損失: {test_results['test_loss']:.4f}")
 
@@ -348,7 +354,7 @@ if __name__ == '__main__':
     if test_results is not None:
         print(f"最終テスト損失: {test_results['test_loss']:.4f}")
     else:
-        print("最終テスト損失: skipped")
+        print("最終テスト損失: skipped (評価は別スクリプト evaluate_lora_mps.py で実行してください)")
     
     """
     チェックポイントファイルのバックアップ移動
