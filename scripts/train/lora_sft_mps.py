@@ -224,10 +224,10 @@ training_args = transformers.TrainingArguments(
     gradient_accumulation_steps=gradient_accumulation_steps,   # 勾配累積回数
     learning_rate=1e-4,                    # 基本の学習率 (AdamW最適化器でよく使われる値、モデルやデータに応じて変更推奨)
 
-    warmup_steps=5,                        # 最初の数ステップは小さい学習率でウォームアップ (急な学習率変動による不安定化を防ぐ)
-    max_steps=100,                         # 総学習ステップ数。データ量や目的に合わせて調整
+    warmup_steps=10,                       # 最初の数ステップは小さい学習率でウォームアップ (急な学習率変動による不安定化を防ぐ)
+    max_steps=200,                         # 総学習ステップ数。データ量や目的に合わせて調整
     logging_steps=5,                       # ログ (損失や評価値など) を何ステップごとに出力するか
-    eval_steps=10,                         # バリデーション (検証) を何ステップごとに行うか
+    eval_steps=25,                         # バリデーション (検証) を何ステップごとに行うか
     save_steps=50,                         # モデルをチェックポイントとして何ステップごとに保存するか
 
     # 以下は動作確認用
